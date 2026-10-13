@@ -307,7 +307,7 @@
         </div>
     </t>
     <t t-name="spreadsheet_oca.SpreadsheetRenderer" owl="1">
-        <SpreadsheetComponent model="spreadsheet_model" />
+        <SpreadsheetComponent model="state.model" t-key="state.modelKey" />
     </t>
     <t t-name="spreadsheet_oca.SpreadsheetName" owl="1">
         <input

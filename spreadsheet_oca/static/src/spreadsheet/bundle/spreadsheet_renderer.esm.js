@@ -13,7 +13,7 @@ import {waitForDataLoaded} from "@spreadsheet/helpers/model";
 
 const {Model, load} = spreadsheet;
 
-const {useSubEnv, onWillStart} = owl;
+const {useState, useSubEnv, onWillStart} = owl;
 const {useStoreProvider, ModelStore} = spreadsheet.stores;
 const uuidGenerator = new spreadsheet.helpers.UuidGenerator();
 
@@ -125,10 +125,10 @@ export class SpreadsheetRenderer extends Component {
         this.action = useService("action");
         this.dialog = useService("dialog");
         this.notifications = useService("notification");
-        const odooDataProvider = new OdooDataProvider(this.env);
+        this.odooDataProvider = new OdooDataProvider(this.env);
         this.loadCurrencies = this.getCurrencies();
         this.loadLocales = this.getLocales();
-        const defaultCurrency = this.props.record.default_currency;
+        this.defaultCurrency = this.props.record.default_currency;
         this.fileStore = new ImageFileStore(
             this.props.model,
             this.props.res_id,
@@ -137,34 +137,31 @@ export class SpreadsheetRenderer extends Component {
         );
         this.stores = useStoreProvider();
         // The o-spreadsheet Model handles currency formatting internally
-        this.spreadsheet_model = new Model(
+        this.transportService = new SpreadsheetTransportService(
+            this.orm,
+            this.bus_service,
+            this.props.model,
+            this.props.res_id
+        );
+        this.client = {
+            id: uuidGenerator.uuidv4(),
+            name: user.name,
+            userId: user.userId,
+        };
+        this.mode = this.props.record.mode;
+        this.state = useState({
+            model: null,
+            modelKey: 0,
+        });
+        this.state.model = new Model(
             load(this.props.record.spreadsheet_raw),
-            {
-                custom: {env: this.env, orm: this.orm, odooDataProvider},
-                defaultCurrency: this.createDefaultCurrency(defaultCurrency),
-                external: {
-                    loadCurrencies: this.loadCurrencies,
-                    loadLocales: this.loadLocales,
-                    fileStore: this.fileStore,
-                },
-                transportService: new SpreadsheetTransportService(
-                    this.orm,
-                    this.bus_service,
-                    this.props.model,
-                    this.props.res_id
-                ),
-                client: {
-                    id: uuidGenerator.uuidv4(),
-                    name: user.name,
-                    userId: user.userId,
-                },
-                mode: this.props.record.mode,
-            },
+            this._getModelConfig(),
             this.props.record.revisions
         );
         useSubEnv({
             saveSpreadsheet: this.onSpreadsheetSaved.bind(this),
             downloadAsXLXS: this.downloadAsXLXS.bind(this),
+            importXLSX: this.importXLSX.bind(this),
         });
         onWillStart(async () => {
             await loadBundle("spreadsheet.o_spreadsheet");
@@ -176,9 +173,101 @@ export class SpreadsheetRenderer extends Component {
         useSetupAction({
             beforeLeave: this.onSpreadsheetSaved.bind(this),
         });
-        odooDataProvider.addEventListener("data-source-updated", () => {
+        this.odooDataProvider.addEventListener("data-source-updated", () => {
             const sheetId = this.spreadsheet_model.getters.getActiveSheetId();
             this.spreadsheet_model.dispatch("EVALUATE_CELLS", {sheetId});
+        });
+    }
+
+    get spreadsheet_model() {
+        return this.state.model;
+    }
+
+    _getModelConfig() {
+        return {
+            custom: {
+                env: this.env,
+                orm: this.orm,
+                odooDataProvider: this.odooDataProvider,
+            },
+            defaultCurrency: this.createDefaultCurrency(this.defaultCurrency),
+            external: {
+                loadCurrencies: this.loadCurrencies,
+                loadLocales: this.loadLocales,
+                fileStore: this.fileStore,
+            },
+            transportService: this.transportService,
+            client: this.client,
+            mode: this.mode,
+        };
+    }
+
+    async importXLSX() {
+        const input = document.createElement("input");
+        input.setAttribute("type", "file");
+        input.setAttribute(
+            "accept",
+            ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        input.setAttribute("style", "display: none");
+        document.body.appendChild(input);
+        input.addEventListener("change", async () => {
+            input.remove();
+            const file = input.files[0];
+            if (!file || this.mode === "readonly") {
+                return;
+            }
+            this.ui.block();
+            try {
+                const files = await this._extractXLSXFiles(file);
+                await this._loadImportedData(files, file.name);
+            } catch {
+                this.notifications.add(
+                    _t("The selected file is not a valid XLSX file."),
+                    {type: "danger"}
+                );
+            } finally {
+                this.ui.unblock();
+            }
+        });
+        input.click();
+    }
+
+    async _extractXLSXFiles(file) {
+        const zip = await new JSZip().loadAsync(file);
+        const files = {};
+        const imageEntryNames = [];
+        for (const entry of Object.values(zip.files)) {
+            if (entry.dir) {
+                continue;
+            }
+            if (entry.name.endsWith(".xml") || entry.name.endsWith(".rels")) {
+                files[entry.name] = await entry.async("text");
+            } else if (entry.name.includes("media/image")) {
+                imageEntryNames.push(entry.name);
+            }
+        }
+        for (const entryName of imageEntryNames) {
+            const blob = await zip.files[entryName].async("blob");
+            const imageFile = new File([blob], entryName.split("/").pop());
+            files[entryName] = {imageSrc: await this.fileStore.upload(imageFile)};
+        }
+        return files;
+    }
+
+    async _loadImportedData(files, name) {
+        const workbookData = load(files);
+        await this.spreadsheet_model.leaveSession();
+        this.spreadsheet_model.off("update", this);
+        this.stores.resetStores();
+        this.state.modelKey += 1;
+        this.state.model = new Model(load(workbookData), this._getModelConfig());
+        await waitForDataLoaded(this.spreadsheet_model);
+        this.spreadsheet_model.joinSession();
+        this.stores.inject(ModelStore, this.spreadsheet_model);
+        await this.env.saveRecord({
+            name,
+            spreadsheet_raw: this.spreadsheet_model.exportData(),
         });
     }
     async onSpreadsheetSaved() {
