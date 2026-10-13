@@ -36,6 +36,13 @@ topbarMenuRegistry.addChild("download", ["file"], {
     execute: (env) => env.downloadAsXLXS(),
     icon: "o-spreadsheet-Icon.EXPORT_XLSX",
 });
+topbarMenuRegistry.addChild("xlsxImport", ["file"], {
+    name: _t("Import XLSX"),
+    sequence: 25,
+    execute: (env) => env.importXLSX(),
+    icon: "o-spreadsheet-Icon.IMPORT_XLSX",
+    isEnabledOnLockedSheet: true,
+});
 const {sidePanelRegistry} = spreadsheet.registries;
 
 export class FilterPanel extends Component {

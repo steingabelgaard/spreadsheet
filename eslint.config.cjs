@@ -17,6 +17,7 @@ const config = [{
             openerp: "readonly",
             owl: "readonly",
             luxon: "readonly",
+            JSZip: "readonly",
             QUnit: "readonly",
             ...globals.browser,
         },
